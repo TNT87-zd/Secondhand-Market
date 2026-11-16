@@ -124,4 +124,39 @@ describe("Marketplace", function () {
         .to.be.revertedWithCustomError(market, "ArbiterIsParty");
     });
   });
+  describe("Kiểm thử tích hợp giao diện / phân quyền bổ sung", function () {
+    it("chỉ Seller có thể gỡ món của chính mình", async function () {
+      const { market, buyer, seller } = await loadFixture(listedFixture);
+      await expect(market.connect(buyer).delistItem(1)).to.be.revertedWithCustomError(market, "NotSeller");
+      await expect(market.connect(seller).delistItem(1)).to.emit(market, "ItemDelisted").withArgs(1);
+      expect((await market.items(1)).active).to.equal(false);
+    });
+
+    it("không thể mua lại sản phẩm đã mua", async function () {
+      const { market, buyer, price } = await loadFixture(paidFixture);
+      await expect(market.connect(buyer).buyItem(1, { value: price })).to.be.revertedWithCustomError(market, "ItemNotActive");
+    });
+
+    it("không thể hoàn tiền sau khi Seller đã gửi hàng", async function () {
+      const { market, buyer } = await loadFixture(shippedFixture);
+      await expect(market.connect(buyer).cancelOrder(1)).to.be.revertedWithCustomError(market, "WrongState");
+    });
+
+    it("Seller không thể giả làm Buyer để xác nhận nhận hàng", async function () {
+      const { market, seller } = await loadFixture(shippedFixture);
+      await expect(market.connect(seller).confirmDelivery(1)).to.be.revertedWithCustomError(market, "NotBuyer");
+    });
+
+    it("Escrow chỉ chấp nhận lệnh từ Marketplace", async function () {
+      const { escrow, buyer } = await loadFixture(paidFixture);
+      await expect(escrow.connect(buyer).release(1, buyer.address)).to.be.revertedWithCustomError(escrow, "OnlyMarketplace");
+    });
+
+    it("không giải ngân hai lần sau khi tranh chấp được xử lý", async function () {
+      const { market, arbiter } = await loadFixture(disputedFixture);
+      await market.connect(arbiter).resolveDispute(1, true);
+      await expect(market.connect(arbiter).resolveDispute(1, false)).to.be.revertedWithCustomError(market, "WrongState");
+    });
+  });
+
 });

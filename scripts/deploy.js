@@ -2,7 +2,8 @@ const hre = require("hardhat");
 const fs = require("fs");
 
 async function main() {
-  const [deployer, arbiter] = await hre.ethers.getSigners(); // Account 0 = owner, Account 1 = arbiter
+  const [arbiter, seller, buyer] = await hre.ethers.getSigners();
+  const deployer = arbiter;
   const market = await (await hre.ethers.getContractFactory("Marketplace")).deploy(arbiter.address);
   await market.waitForDeployment();
 
