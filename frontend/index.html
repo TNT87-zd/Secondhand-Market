@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Second-hand Marketplace</title>
+<style>
+  body { font-family: sans-serif; max-width: 900px; margin: 20px auto; padding: 0 12px; }
+  .card { border: 1px solid #ccc; border-radius: 8px; padding: 10px; margin: 8px 0; }
+  button { margin-right: 6px; cursor: pointer; }
+  #status { padding: 8px; background: #f3f3f3; border-radius: 6px; word-break: break-all; }
+</style>
+</head>
+<body>
+<h2>Second-hand Marketplace (Escrow)</h2>
+<button onclick="connect()">Kết nối MetaMask</button>
+<p>Tài khoản: <b id="acc">-</b> | Vai trò: <b id="role">-</b></p>
+<div id="status">Chưa kết nối</div>
+
+<h3>Đăng bán</h3>
+<input id="name" placeholder="Tên món đồ">
+<input id="price" placeholder="Giá (ETH)" size="8">
+<button onclick="listItem()">Đăng bán</button>
+
+<h3>Món đồ đang bán</h3><div id="items"></div>
+<h3>Đơn hàng của tôi</h3><div id="orders"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<script src="contract.js"></script>
+<script>
+const STATES = ["Paid", "Shipped", "Completed", "Disputed", "Refunded"];
+let market, account, arbiter;
+
+// Chống XSS: tên món đồ do người dùng nhập nên phải escape trước khi chèn vào HTML
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const same = (a, b) => a.toLowerCase() === b.toLowerCase();
+const setStatus = (m) => (document.getElementById("status").textContent = m);
+
+async function connect() {
+  if (!window.ethereum) return alert("Hãy cài MetaMask");
+  const provider = new ethers.BrowserProvider(window.ethereum);
+  await provider.send("eth_requestAccounts", []);
+  const signer = await provider.getSigner();
+  account = await signer.getAddress();
+  market = new ethers.Contract(CONTRACT.address, CONTRACT.abi, signer);
+  document.getElementById("acc").textContent = account;
+  window.ethereum.on("accountsChanged", () => location.reload());
+  window.ethereum.on("chainChanged", () => location.reload());
+  await refresh();
+}
+
+async function send(fn) {
+  try {
+    setStatus("Hãy xác nhận trong MetaMask...");
+    const tx = await fn();
+    setStatus("Đang chờ xác nhận block...");
+    await tx.wait();
+    setStatus("Thành công. Tx: " + tx.hash);
+    await refresh();
+  } catch (e) {
+    setStatus("Lỗi: " + (e.revert?.name || e.shortMessage || e.message));
+  }
+}
+
+async function refresh() {
+  arbiter = await market.arbiter();
+  document.getElementById("role").textContent = same(arbiter, account) ? "Arbiter" : "User";
+  const itemCount = Number(await market.itemCount());
+  const orderCount = Number(await market.orderCount());
+
+  let html = "";
+  for (let i = 1; i <= itemCount; i++) {
+    const it = await market.items(i);
+    if (!it.active) continue;
+    const mine = same(it.seller, account);
+    html += `<div class="card"><b>#${i} ${esc(it.name)}</b> - ${ethers.formatEther(it.price)} ETH<br>
+      Người bán: ${esc(it.seller)}<br>` +
+      (mine ? `<button onclick="delist(${i})">Gỡ bán</button>`
+            : `<button onclick="buy(${i}, '${it.price}')">Mua</button>`) + `</div>`;
+  }
+  document.getElementById("items").innerHTML = html || "Chưa có món nào đang bán";
+
+  html = "";
+  for (let i = 1; i <= orderCount; i++) {
+    const o = await market.orders(i);
+    const isBuyer = same(o.buyer, account), isSeller = same(o.seller, account), isArb = same(arbiter, account);
+    if (!isBuyer && !isSeller && !isArb) continue;
+    const st = Number(o.state);
+    let btn = "";
+    if (isSeller && st === 0) btn += `<button onclick="act('markShipped', ${i})">Đã gửi hàng</button>`;
+    if (isBuyer && st === 0) btn += `<button onclick="act('cancelOrder', ${i})">Hủy đơn (hoàn tiền)</button>`;
+    if (isBuyer && st === 1) btn += `<button onclick="act('confirmDelivery', ${i})">Đã nhận hàng</button>`;
+    if ((isBuyer || isSeller) && st === 1) btn += `<button onclick="act('raiseDispute', ${i})">Khiếu nại</button>`;
+    if (isArb && st === 3) btn += `<button onclick="resolve(${i}, true)">Trả tiền cho người bán</button>
+                                   <button onclick="resolve(${i}, false)">Hoàn tiền cho người mua</button>`;
+    html += `<div class="card"><b>Đơn #${i}</b> (món #${o.itemId}) - ${ethers.formatEther(o.amount)} ETH
+      - <b>${STATES[st]}</b><br>Người mua: ${esc(o.buyer)}<br>Người bán: ${esc(o.seller)}<br>${btn}</div>`;
+  }
+  document.getElementById("orders").innerHTML = html || "Chưa có đơn hàng";
+}
+
+function listItem() {
+  const name = document.getElementById("name").value.trim();
+  const price = document.getElementById("price").value.trim();
+  send(() => market.listItem(name, ethers.parseEther(price)));
+}
+function buy(id, price) { send(() => market.buyItem(id, { value: BigInt(price) })); }
+function delist(id) { send(() => market.delistItem(id)); }
+function act(fn, id) { send(() => market[fn](id)); }
+function resolve(id, toSeller) { send(() => market.resolveDispute(id, toSeller)); }
+</script>
+</body>
+</html>
